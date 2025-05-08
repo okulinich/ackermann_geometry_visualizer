@@ -1,8 +1,10 @@
 from visualizer import RectangleVisualizer
 import time
 import math
+import json
+from typing import Dict, List, Tuple
 
-def calculate_ackermann_angles(steering_angle, wheelbase, track_width):
+def calculate_ackermann_angles(steering_angle: float, wheelbase: float, track_width: float) -> Tuple[float, float]:
     """
     Calculate the Ackermann steering angles for inner and outer wheels.
     
@@ -14,6 +16,10 @@ def calculate_ackermann_angles(steering_angle, wheelbase, track_width):
     Returns:
         tuple: (inner_wheel_angle, outer_wheel_angle) in degrees
     """
+    # Handle zero steering angle case
+    if abs(steering_angle) < 0.1:  # Using small threshold to handle near-zero angles
+        return 0.0, 0.0
+    
     # Convert steering angle to radians
     delta = math.radians(steering_angle)
     
@@ -26,44 +32,70 @@ def calculate_ackermann_angles(steering_angle, wheelbase, track_width):
     
     return inner_angle, outer_angle
 
-def play(position_update, wheelbase, track_width):
-    previous_ts = 0.0
+def get_latest_position(events: List[Dict], current_time: float) -> Dict:
+    """
+    Get the latest position update before or at the current time.
+    """
+    latest_position = None
+    for event in events:
+        if event["type"] == "position" and event["ts"] <= current_time:
+            latest_position = event
+        elif event["ts"] > current_time:
+            break
+    return latest_position
+
+def get_latest_velocity(events: List[Dict], current_time: float) -> Dict:
+    """
+    Get the latest velocity update before or at the current time.
+    """
+    latest_velocity = None
+    for event in events:
+        if event["type"] == "velocity" and event["ts"] <= current_time:
+            latest_velocity = event
+        elif event["ts"] > current_time:
+            break
+    return latest_velocity
+
+def play(events: List[Dict], wheelbase: float, track_width: float, current_time: float) -> Dict:
+    """
+    Calculate vehicle state at the current time using the latest position and velocity data.
+    """
+    # Get latest position and velocity updates
+    position = get_latest_position(events, current_time)
+    velocity_data = get_latest_velocity(events, current_time)
     
-    # Calculate delta t
-    delta_time = position_update["ts"] - previous_ts
-    previous_ts = position_update["ts"]
+    if not position or not velocity_data:
+        raise ValueError(f"No valid position or velocity data found for time {current_time}")
     
     # Calculate Ackermann angles
     inner_angle, outer_angle = calculate_ackermann_angles(
-        position_update["angle"],
+        velocity_data["steering_angle"],
         wheelbase,
         track_width
     )
     
     # Calculate turning radius to center of rear axle
-    turning_radius = wheelbase / math.tan(math.radians(position_update["angle"]))
-    
-    # Calculate angular speed
-    angular_speed = position_update["velocity"] / turning_radius
-    
-    # Update heading
-    heading = math.radians(position_update["angle"]) + angular_speed * delta_time
+    if abs(velocity_data["steering_angle"]) < 0.1:
+        turning_radius = float('inf')  # Infinite radius for straight line
+        angular_speed = 0.0  # No rotation when going straight
+    else:
+        turning_radius = wheelbase / math.tan(math.radians(velocity_data["steering_angle"]))
+        angular_speed = velocity_data["velocity"] / turning_radius
     
     return {
-        "x": position_update["x"],
-        "y": position_update["y"],
-        "heading": math.degrees(heading),
+        "x": position["x"],
+        "y": position["y"],
+        "heading": velocity_data["steering_angle"],
         "inner_angle": inner_angle,
-        "outer_angle": outer_angle
+        "outer_angle": outer_angle,
+        "velocity": velocity_data["velocity"],
+        "turning_radius": turning_radius
     }
 
-# Test data
-test_data = [
-    {"ts": 1, "x": 2, "y": 3, "angle": 90, "velocity": 2},
-    {"ts": 2, "x": 3, "y": 4, "angle": 100, "velocity": 2},
-    {"ts": 3, "x": 4, "y": 5, "angle": 110, "velocity": 2},
-    {"ts": 4, "x": 5, "y": 6, "angle": 120, "velocity": 2}
-]
+# Load test data from JSON file
+with open('test_data.json', 'r') as f:
+    data = json.load(f)
+    events = data['events']
 
 # Create visualizer instance
 visualizer = RectangleVisualizer()
@@ -71,28 +103,35 @@ visualizer = RectangleVisualizer()
 # Car dimensions
 wheelbase = 4.0  # Distance between front and rear axles
 track_width = 2.0  # Distance between left and right wheels
-length, width = 4, 2
 
 try:
-    while True:
-        # Rotate through different angles
-        for item in test_data:
-            # Calculate vehicle state with Ackermann steering
-            state = play(item, wheelbase, track_width)
-            
-            # Update visualization
-            visualizer.update_rectangle(
-                state["x"],
-                state["y"],
-                length,
-                width,
-                state["heading"]
-            )
-            
-            # Print Ackermann angles for debugging
-            print(f"Inner wheel angle: {state['inner_angle']:.2f}°")
-            print(f"Outer wheel angle: {state['outer_angle']:.2f}°")
-            
-            time.sleep(1)
+    current_time = 0.0
+    while current_time <= events[-1]["ts"]:
+        # Calculate vehicle state with Ackermann steering
+        state = play(events, wheelbase, track_width, current_time)
+        
+        # Update visualization
+        visualizer.update_rectangle(
+            state["x"],
+            state["y"],
+            wheelbase,
+            track_width,
+            state["heading"]
+        )
+        
+        # Print debug information
+        print(f"Time: {current_time:.1f}s")
+        print(f"Position: ({state['x']:.1f}, {state['y']:.1f})")
+        print(f"Velocity: {state['velocity']:.1f} m/s")
+        print(f"Inner wheel angle: {state['inner_angle']:.1f}°")
+        print(f"Outer wheel angle: {state['outer_angle']:.1f}°")
+        if state['turning_radius'] != float('inf'):
+            print(f"Turning radius: {state['turning_radius']:.1f} m")
+        else:
+            print("Turning radius: infinite (straight line)")
+        print("---")
+        
+        time.sleep(0.1)  # Update at 10Hz
+        current_time += 0.1
 except KeyboardInterrupt:
     print("\nAnimation stopped by user")
